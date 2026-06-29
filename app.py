@@ -175,28 +175,28 @@ def esc(s):
 # relay mode (English, no LLM)
 # --------------------------------------------------------------------------- #
 def build_message_relay(parts):
-    lines = [f"\U0001F5D3 <b>거시 브리핑</b>"
+    lines = [f"\U0001F4C8 <b>오늘의 미국 시장 브리핑</b>"
              + (f" · {esc(parts['updated'])}" if parts["updated"] else "")]
     if parts["next_update"]:
         lines.append(f"다음 갱신: {esc(parts['next_update'])}")
 
     if parts["frame"]:
-        lines += ["", "\U0001F9ED <b>프레임</b>", esc(parts["frame"])]
+        lines += ["", "\U0001F9ED <b>한 줄 요약</b>", esc(parts["frame"])]
 
     shown = [(DESK_LABELS.get(k, k), parts["desk"][k])
              for k in DESK_FIELDS if k in parts["desk"]]
     if shown:
-        lines += ["", "\U0001F6E0 <b>Desk frame</b>"]
+        lines += ["", "\U0001F50E <b>좀 더 자세히</b>"]
         for label, val in shown:
             lines.append(f"• <b>{esc(label)}:</b> {esc(truncate(val, MAX_FIELD_LEN))}")
 
     if parts["items"]:
-        lines += ["", "\U0001F4CC <b>핵심 항목</b>"]
+        lines += ["", "\U0001F4CC <b>오늘의 주요 포인트</b>"]
         for emoji, h in parts["items"]:
             lines.append(f"{emoji} {esc(truncate(h, 200))}")
 
     if parts["watch"]:
-        lines += ["", "\U0001F440 <b>Watch</b>", esc(truncate(parts["watch"], 500))]
+        lines += ["", "\U0001F440 <b>앞으로 지켜볼 것</b>", esc(truncate(parts["watch"], 500))]
 
     lines += ["", '\U0001F517 전체 보드: https://agentnews.md/finance']
     return "\n".join(lines).strip()
@@ -206,28 +206,36 @@ def build_message_relay(parts):
 # synthesize mode (Korean + 반도체/SOXL 관점, via Anthropic API)
 # --------------------------------------------------------------------------- #
 SYSTEM_PROMPT = (
-    "You translate and lightly interpret a compressed macro market board for a "
-    "Korean reader who trades a leveraged semiconductor ETF (SOXL) on a "
-    "rule-based system.\n\n"
+    "You turn a compressed macro market board into an EASY Korean briefing for "
+    "GENERAL READERS who are NOT finance experts. The reader follows a leveraged "
+    "semiconductor ETF (SOXL) but does not know trading-desk jargon.\n\n"
     "Return ONLY a JSON object, no markdown fences, with keys:\n"
-    '  "frame_ko": string  - the top-line frame in natural Korean (1 sentence).\n'
-    '  "desk_ko": array of {"label","text"}  - translate each desk-frame field '
-    "to Korean. Keep labels as given (Held/Falsifier/Contested/Changed).\n"
-    '  "items_ko": array of strings  - translate each item headline to Korean. '
+    '  "frame_ko": string - one plain-Korean sentence giving the big picture.\n'
+    '  "desk_ko": array of {"label","text"} - rewrite the four desk-frame fields '
+    "in plain Korean using THESE friendly labels, in this order:\n"
+    '       Held            -> "지금 핵심 흐름"\n'
+    '       Falsifier       -> "이렇게 되면 흐름이 바뀌어요"\n'
+    '       Contested       -> "아직 의견이 갈려요"\n'
+    '       Changed since last -> "어제와 달라진 점"\n'
+    '  "items_ko": array of strings - each main point as ONE easy sentence. '
     "PRESERVE the leading emoji.\n"
-    '  "watch_ko": string  - the watch threads in Korean.\n'
-    '  "semi_soxl_ko": string  - 2 to 4 sentences. Interpret what THIS macro '
-    "setup (front-end/rates, dollar, AI bid, oil) implies for the semiconductor "
-    "complex and a leveraged semi ETF like SOXL. Focus on the volatility regime "
-    "and the rates/dollar vs AI-bid tug-of-war.\n\n"
-    "Rules:\n"
-    "- Natural, concise Korean. Common financial terms may stay as-is "
-    "(2년물, 달러인덱스, PCE).\n"
+    '  "watch_ko": string - what to keep an eye on, in plain Korean.\n'
+    '  "semi_soxl_ko": string - 2 to 3 easy sentences on what this setup means '
+    "for semiconductors and a leveraged semi ETF like SOXL.\n\n"
+    "Writing rules (IMPORTANT):\n"
+    "- Write for a smart non-expert. Short, clear, friendly sentences.\n"
+    "- The FIRST time a technical term appears, add a tiny parenthetical "
+    "explanation, e.g. PCE(미국 물가지표), 2년물 금리(시장이 보는 단기 금리 전망), "
+    "달러인덱스(달러가 얼마나 강한지), 레버리지 ETF(주가 등락을 몇 배로 키운 상품). "
+    "Keep each explanation very short.\n"
+    "- Avoid desk jargon (front-end, repricing, bid, tug-of-war, hawkish). Use "
+    "everyday Korean instead (예: 단기 금리, 다시 가격에 반영, 매수세, 줄다리기, "
+    "금리 인상에 무게).\n"
     "- Ground everything ONLY in the provided board. Do NOT invent numbers, "
     "levels, or facts not present.\n"
-    "- semi_soxl_ko is interpretation of implications, NOT a trade "
-    "recommendation. Never say buy/sell/enter/exit. Frame as what to watch.\n"
-    "- Keep total output compact (under ~1500 Korean characters)."
+    "- semi_soxl_ko explains what to watch, it is NOT a trade recommendation. "
+    "Never say buy/sell/enter/exit.\n"
+    "- Keep total output compact (under ~1400 Korean characters)."
 )
 
 
@@ -285,17 +293,17 @@ def parse_llm_json(txt):
 
 
 def build_message_ko(obj, parts):
-    lines = [f"\U0001F5D3 <b>거시 브리핑</b>"
+    lines = [f"\U0001F4C8 <b>오늘의 미국 시장 브리핑</b>"
              + (f" · {esc(parts['updated'])}" if parts["updated"] else "")]
     if parts["next_update"]:
         lines.append(f"다음 갱신: {esc(parts['next_update'])}")
 
     if obj.get("frame_ko"):
-        lines += ["", "\U0001F9ED <b>프레임</b>", esc(obj["frame_ko"])]
+        lines += ["", "\U0001F9ED <b>한 줄 요약</b>", esc(obj["frame_ko"])]
 
     desk = obj.get("desk_ko") or []
     if desk:
-        lines += ["", "\U0001F6E0 <b>Desk frame</b>"]
+        lines += ["", "\U0001F50E <b>좀 더 자세히</b>"]
         for d in desk:
             label = esc(str(d.get("label", "")))
             text = esc(truncate(str(d.get("text", "")), MAX_FIELD_LEN))
@@ -303,7 +311,7 @@ def build_message_ko(obj, parts):
 
     items = obj.get("items_ko") or []
     if items:
-        lines += ["", "\U0001F4CC <b>핵심 항목</b>"]
+        lines += ["", "\U0001F4CC <b>오늘의 주요 포인트</b>"]
         for it in items:
             lines.append(esc(truncate(str(it), 220)))
 
@@ -312,7 +320,7 @@ def build_message_ko(obj, parts):
                   esc(truncate(str(obj["semi_soxl_ko"]), 900))]
 
     if obj.get("watch_ko"):
-        lines += ["", "\U0001F440 <b>Watch</b>",
+        lines += ["", "\U0001F440 <b>앞으로 지켜볼 것</b>",
                   esc(truncate(str(obj["watch_ko"]), 500))]
 
     lines += ["", f"<i>{esc(DISCLAIMER)}</i>",
