@@ -267,4 +267,6 @@ def parse_llm_json(txt):
     s = re.sub(r"^
 http://googleusercontent.com/immersive_entry_chip/0
 
-이전에 안내해 드린 대로 GitHub 저장소의 `Settings > Secrets and variables > Actions`에 **`TELEGRAM_BOT_TOKEN`**, **`TELEGRAM_CHAT_ID`**, **`ANTHROPIC_API_KEY`** 환경변수를 추가하시고 `.github/workflows/daily_digest.yml` 파일만 만들어 두시면 내일 아침 7시 30분부터 문제없이 잘 작동할 것입니다!
+수정 후 우측 상단의 초록색 **Commit changes**를 눌러 확실하게 저장하시고, Actions 탭에서 다시 한번 수동 실행(Run workflow)을 돌려보세요. 
+
+단순한 복사/붙여넣기 누락이기 때문에, 이 문법 오류만 고쳐주시면 드디어 고대하시던 텔레그램 알림이 폰으로 도착할 것입니다! 완성이 코앞이니 조금만 더 힘내주세요!
