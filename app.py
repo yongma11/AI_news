@@ -5,21 +5,6 @@ Two modes (env DIGEST_MODE, or ?mode= on the request):
   relay       : compress the board and forward as-is (English, no LLM)
   synthesize  : translate to Korean + add a semiconductor/SOXL lens via the
                 Anthropic API  (default)
-
-Flow:
-  cron-job.org --(GET /digest?key=RUN_KEY)--> this server
-      -> fetch https://agentnews.md/finance.md
-      -> compress (frame / desk frame / item headlines / watch)
-      -> [synthesize] Claude API: Korean + 반도체/SOXL 관점
-      -> send to your Telegram chat
-
-Secrets are read from environment variables only. Never hard-code them.
-  TELEGRAM_BOT_TOKEN   from @BotFather
-  TELEGRAM_CHAT_ID     your chat id (see README)
-  RUN_KEY              a random string you choose, to protect the endpoint
-  ANTHROPIC_API_KEY    only needed for synthesize mode
-  ANTHROPIC_MODEL      optional, default claude-sonnet-4-6
-  DIGEST_MODE          'synthesize' (default) or 'relay'
 """
 
 import os
@@ -97,11 +82,6 @@ def truncate(s, n):
 
 
 def slice_board(text):
-    """Live 'Current now board' region only.
-
-    Stops before '## Go deeper' / '## For AI agents' so the agent-directed
-    footer (e.g. '/install') is never relayed or fed to the LLM.
-    """
     start = text.find("## Current now board")
     if start == -1:
         start = 0
@@ -259,7 +239,7 @@ def parts_to_plaintext(p):
 
 def call_anthropic(plain_text):
     api_key = cfg("ANTHROPIC_API_KEY", required=True)
-    model = cfg("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+    model = cfg("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest") # 모델명 최신화 (필요시 수정)
     resp = requests.post(
         ANTHROPIC_API,
         headers={
@@ -284,137 +264,7 @@ def call_anthropic(plain_text):
 
 def parse_llm_json(txt):
     s = txt.strip()
-    s = re.sub(r"^```(?:json)?", "", s).strip()
-    s = re.sub(r"```$", "", s).strip()
-    i, j = s.find("{"), s.rfind("}")
-    if i != -1 and j != -1:
-        s = s[i : j + 1]
-    return json.loads(s)
+    s = re.sub(r"^
+http://googleusercontent.com/immersive_entry_chip/0
 
-
-def build_message_ko(obj, parts):
-    lines = [f"\U0001F4C8 <b>오늘의 미국 시장 브리핑</b>"
-             + (f" · {esc(parts['updated'])}" if parts["updated"] else "")]
-    if parts["next_update"]:
-        lines.append(f"다음 갱신: {esc(parts['next_update'])}")
-
-    if obj.get("frame_ko"):
-        lines += ["", "\U0001F9ED <b>한 줄 요약</b>", esc(obj["frame_ko"])]
-
-    desk = obj.get("desk_ko") or []
-    if desk:
-        lines += ["", "\U0001F50E <b>좀 더 자세히</b>"]
-        for d in desk:
-            label = esc(str(d.get("label", "")))
-            text = esc(truncate(str(d.get("text", "")), MAX_FIELD_LEN))
-            lines.append(f"• <b>{label}:</b> {text}")
-
-    items = obj.get("items_ko") or []
-    if items:
-        lines += ["", "\U0001F4CC <b>오늘의 주요 포인트</b>"]
-        for it in items:
-            lines.append(esc(truncate(str(it), 220)))
-
-    if obj.get("semi_soxl_ko"):
-        lines += ["", "\U0001F9EE <b>반도체 · SOXL 관점</b>",
-                  esc(truncate(str(obj["semi_soxl_ko"]), 900))]
-
-    if obj.get("watch_ko"):
-        lines += ["", "\U0001F440 <b>앞으로 지켜볼 것</b>",
-                  esc(truncate(str(obj["watch_ko"]), 500))]
-
-    lines += ["", f"<i>{esc(DISCLAIMER)}</i>",
-              '\U0001F517 전체 보드: https://agentnews.md/finance']
-    return "\n".join(lines).strip()
-
-
-# --------------------------------------------------------------------------- #
-# telegram
-# --------------------------------------------------------------------------- #
-def split_message(text, limit=TELEGRAM_LIMIT):
-    if len(text) <= limit:
-        return [text]
-    chunks, cur = [], ""
-    for para in text.split("\n"):
-        if len(cur) + len(para) + 1 > limit:
-            chunks.append(cur)
-            cur = para
-        else:
-            cur = f"{cur}\n{para}" if cur else para
-    if cur:
-        chunks.append(cur)
-    return chunks
-
-
-def send_telegram(text):
-    token = cfg("TELEGRAM_BOT_TOKEN", required=True)
-    chat_id = cfg("TELEGRAM_CHAT_ID", required=True)
-    url = TELEGRAM_API.format(token=token)
-    for chunk in split_message(text):
-        resp = requests.post(
-            url,
-            json={
-                "chat_id": chat_id, "text": chunk,
-                "parse_mode": "HTML", "disable_web_page_preview": True,
-            },
-            timeout=HTTP_TIMEOUT,
-        )
-        resp.raise_for_status()
-
-
-# --------------------------------------------------------------------------- #
-# core
-# --------------------------------------------------------------------------- #
-def build_digest(mode):
-    text = fetch_board()
-    parts = extract_parts(text)
-    if mode == "relay":
-        return build_message_relay(parts), {"mode": "relay"}
-    # synthesize
-    raw = call_anthropic(parts_to_plaintext(parts))
-    try:
-        obj = parse_llm_json(raw)
-        return build_message_ko(obj, parts), {"mode": "synthesize"}
-    except Exception:
-        # fall back to relay if the model returned something unparseable
-        return build_message_relay(parts), {"mode": "relay_fallback"}
-
-
-# --------------------------------------------------------------------------- #
-# routes
-# --------------------------------------------------------------------------- #
-@app.route("/health")
-def health():
-    return jsonify({"ok": True})
-
-
-@app.route("/digest", methods=["GET", "POST"])
-def digest():
-    key = request.args.get("key") or request.headers.get("X-Run-Key")
-    expected = cfg("RUN_KEY")
-    if expected and key != expected:
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
-
-    mode = (request.args.get("mode") or cfg("DIGEST_MODE", "synthesize")).lower()
-    if mode not in ("relay", "synthesize"):
-        mode = "synthesize"
-
-    try:
-        msg, info = build_digest(mode)
-    except Exception as e:
-        return jsonify({"ok": False, "stage": "build", "error": str(e)}), 500
-
-    if request.args.get("dry") in ("1", "true", "yes"):
-        return jsonify({"ok": True, "dry_run": True, "info": info, "message": msg})
-
-    try:
-        send_telegram(msg)
-    except Exception as e:
-        return jsonify({"ok": False, "stage": "send", "error": str(e)}), 500
-
-    return jsonify({"ok": True, "sent": True, "info": info})
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "8080"))
-    app.run(host="0.0.0.0", port=port)
+이전에 안내해 드린 대로 GitHub 저장소의 `Settings > Secrets and variables > Actions`에 **`TELEGRAM_BOT_TOKEN`**, **`TELEGRAM_CHAT_ID`**, **`ANTHROPIC_API_KEY`** 환경변수를 추가하시고 `.github/workflows/daily_digest.yml` 파일만 만들어 두시면 내일 아침 7시 30분부터 문제없이 잘 작동할 것입니다!
