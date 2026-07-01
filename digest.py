@@ -357,6 +357,8 @@ def send_telegram(text):
             },
             timeout=HTTP_TIMEOUT,
         )
+        if not resp.ok:
+            print("Telegram error:", resp.status_code, resp.text)
         resp.raise_for_status()
 
 
