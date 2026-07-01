@@ -1,3 +1,4 @@
+```python
 """
 agentnews -> Telegram daily macro digest
 
@@ -239,7 +240,7 @@ def parts_to_plaintext(p):
 
 def call_anthropic(plain_text):
     api_key = cfg("ANTHROPIC_API_KEY", required=True)
-    model = cfg("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest") # 모델명 최신화 (필요시 수정)
+    model = cfg("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest") 
     resp = requests.post(
         ANTHROPIC_API,
         headers={
@@ -265,8 +266,5 @@ def call_anthropic(plain_text):
 def parse_llm_json(txt):
     s = txt.strip()
     s = re.sub(r"^
-http://googleusercontent.com/immersive_entry_chip/0
 
-수정 후 우측 상단의 초록색 **Commit changes**를 눌러 확실하게 저장하시고, Actions 탭에서 다시 한번 수동 실행(Run workflow)을 돌려보세요. 
-
-단순한 복사/붙여넣기 누락이기 때문에, 이 문법 오류만 고쳐주시면 드디어 고대하시던 텔레그램 알림이 폰으로 도착할 것입니다! 완성이 코앞이니 조금만 더 힘내주세요!
+```
