@@ -72,7 +72,8 @@ def clean_md(s):
     if not s:
         return ""
     s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)   # [text](url) -> text
-    s = re.sub(r"(\*\*|__|\*|`)", "", s)             # drop emphasis markers
+    s = re.sub(r"(\*\*|__|\*)", "", s)               # drop emphasis markers
+    s = s.replace(chr(96), "")                       # 모바일 복사 버그 방지를 위해 chr(96)으로 백틱 제거
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -265,6 +266,175 @@ def call_anthropic(plain_text):
 
 def parse_llm_json(txt):
     s = txt.strip()
-    s = re.sub(r"^
+    
+    # 모바일 복사 버그를 피하기 위해 특수기호를 직접 쓰지 않고 우회해서 마크다운 기호를 제거합니다.
+    tick3 = chr(96) * 3
+    if s.startswith(tick3 + "json"):
+        s = s[7:]
+    elif s.startswith(tick3):
+        s = s[3:]
+    if s.endswith(tick3):
+        s = s[:-3]
+        
+    s = s.strip()
+    i, j = s.find("{"), s.rfind("}")
+    if i != -1 and j != -1:
+        s = s[i : j + 1]
+    return json.loads(s)
+
+
+def build_message_ko(obj, parts):
+    lines = [f"\U0001F4C8 <b>오늘의 미국 시장 브리핑</b>"
+             + (f" · {esc(parts['updated'])}" if parts["updated"] else "")]
+    if parts["next_update"]:
+        lines.append(f"다음 갱신: {esc(parts['next_update'])}")
+
+    if obj.get("frame_ko"):
+        lines += ["", "\U0001F9ED <b>한 줄 요약</b>", esc(obj["frame_ko"])]
+
+    desk = obj.get("desk_ko") or []
+    if desk:
+        lines += ["", "\U0001F50E <b>좀 더 자세히</b>"]
+        for d in desk:
+            label = esc(str(d.get("label", "")))
+            text = esc(truncate(str(d.get("text", "")), MAX_FIELD_LEN))
+            lines.append(f"• <b>{label}:</b> {text}")
+
+    items = obj.get("items_ko") or []
+    if items:
+        lines += ["", "\U0001F4CC <b>오늘의 주요 포인트</b>"]
+        for it in items:
+            lines.append(esc(truncate(str(it), 220)))
+
+    if obj.get("semi_soxl_ko"):
+        lines += ["", "\U0001F9EE <b>반도체 · SOXL 관점</b>",
+                  esc(truncate(str(obj["semi_soxl_ko"]), 900))]
+
+    if obj.get("watch_ko"):
+        lines += ["", "\U0001F440 <b>앞으로 지켜볼 것</b>",
+                  esc(truncate(str(obj["watch_ko"]), 500))]
+
+    lines += ["", f"<i>{esc(DISCLAIMER)}</i>",
+              '\U0001F517 전체 보드: https://agentnews.md/finance']
+    return "\n".join(lines).strip()
+
+
+# --------------------------------------------------------------------------- #
+# telegram
+# --------------------------------------------------------------------------- #
+def split_message(text, limit=TELEGRAM_LIMIT):
+    if len(text) <= limit:
+        return [text]
+    chunks, cur = [], ""
+    for para in text.split("\n"):
+        if len(cur) + len(para) + 1 > limit:
+            chunks.append(cur)
+            cur = para
+        else:
+            cur = f"{cur}\n{para}" if cur else para
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def send_telegram(text):
+    token = cfg("TELEGRAM_BOT_TOKEN", required=True)
+    chat_id = cfg("TELEGRAM_CHAT_ID", required=True)
+    url = TELEGRAM_API.format(token=token)
+    for chunk in split_message(text):
+        resp = requests.post(
+            url,
+            json={
+                "chat_id": chat_id, "text": chunk,
+                "parse_mode": "HTML", "disable_web_page_preview": True,
+            },
+            timeout=HTTP_TIMEOUT,
+        )
+        resp.raise_for_status()
+
+
+# --------------------------------------------------------------------------- #
+# core
+# --------------------------------------------------------------------------- #
+def build_digest(mode):
+    text = fetch_board()
+    parts = extract_parts(text)
+    if mode == "relay":
+        return build_message_relay(parts), {"mode": "relay"}
+    # synthesize
+    raw = call_anthropic(parts_to_plaintext(parts))
+    try:
+        obj = parse_llm_json(raw)
+        return build_message_ko(obj, parts), {"mode": "synthesize"}
+    except Exception:
+        # fall back to relay if the model returned something unparseable
+        return build_message_relay(parts), {"mode": "relay_fallback"}
+
+
+# --------------------------------------------------------------------------- #
+# routes
+# --------------------------------------------------------------------------- #
+@app.route("/health")
+def health():
+    return jsonify({"ok": True})
+
+
+@app.route("/digest", methods=["GET", "POST"])
+def digest():
+    key = request.args.get("key") or request.headers.get("X-Run-Key")
+    expected = cfg("RUN_KEY")
+    if expected and key != expected:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    mode = (request.args.get("mode") or cfg("DIGEST_MODE", "synthesize")).lower()
+    if mode not in ("relay", "synthesize"):
+        mode = "synthesize"
+
+    try:
+        msg, info = build_digest(mode)
+    except Exception as e:
+        error_msg = str(e)[:200] + "..." if len(str(e)) > 200 else str(e)
+        return jsonify({"ok": False, "stage": "build", "error": error_msg}), 500
+
+    if request.args.get("dry") in ("1", "true", "yes"):
+        return jsonify({"ok": True, "dry_run": True, "info": info, "message": msg})
+
+    try:
+        send_telegram(msg)
+    except Exception as e:
+        error_msg = str(e)[:200] + "..." if len(str(e)) > 200 else str(e)
+        return jsonify({"ok": False, "stage": "send", "error": error_msg}), 500
+
+    return jsonify({"ok": True, "sent": True, "info": info})
+
+
+# --------------------------------------------------------------------------- #
+# Execution Entry Point
+# --------------------------------------------------------------------------- #
+if __name__ == "__main__":
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print("GitHub Actions 모드로 자동 실행을 시작합니다...")
+        try:
+            mode = os.environ.get("DIGEST_MODE", "synthesize").lower()
+            if mode not in ("relay", "synthesize"):
+                mode = "synthesize"
+                
+            print(f"데이터 수집 및 분석 중... (모드: {mode})")
+            msg, info = build_digest(mode)
+            
+            print("텔레그램으로 메시지 발송 중...")
+            send_telegram(msg)
+            
+            print(f"작업 완료! 텔레그램을 확인해 주세요. (결과 상태: {info.get('mode')})")
+            
+        except Exception as e:
+            print(f"실행 중 에러 발생: {e}")
+            raise e
+            
+    else:
+        print("웹 서버 모드로 실행합니다...")
+        port = int(os.environ.get("PORT", "8080"))
+        app.run(host="0.0.0.0", port=port)
+
 
 ```
