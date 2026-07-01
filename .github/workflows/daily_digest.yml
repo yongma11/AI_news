@@ -2,11 +2,7 @@ name: Daily Telegram News Digest
 
 on:
   schedule:
-    # GitHub Actions는 UTC 기준입니다. 
-    # 한국 시간(KST) 오전 7:30은 UTC 기준 전날 오후 10:30 입니다.
     - cron: '30 22 * * *'
-  
-  # 수동으로 실행해볼 수 있도록 버튼을 만들어 줍니다.
   workflow_dispatch:
 
 jobs:
@@ -20,7 +16,7 @@ jobs:
       - name: 파이썬 환경 설정
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10' # 사용하시는 파이썬 버전에 맞게 수정하셔도 됩니다.
+          python-version: '3.10'
 
       - name: 패키지 설치
         run: |
@@ -32,6 +28,6 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_MODEL: 'claude-3-5-sonnet-latest' # 필요시 수정
+          ANTHROPIC_MODEL: 'claude-3-5-sonnet-latest'
         run: |
           python app.py
