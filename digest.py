@@ -5,6 +5,9 @@ Two modes (env DIGEST_MODE, or ?mode= on the request):
   relay       : compress the board and forward as-is (English, no LLM)
   synthesize  : translate to Korean + add a semiconductor/SOXL lens via the
                 Anthropic API  (default)
+
+Flask is only needed for the (legacy) web-server mode; the GitHub Actions run
+never serves HTTP, so Flask is imported lazily inside run_web_server().
 """
 
 import os
@@ -13,9 +16,7 @@ import json
 import html
 import requests
 from datetime import datetime, timezone
-from flask import Flask, request, jsonify
 
-app = Flask(__name__)
 
 BOARD_URL = "https://agentnews.md/finance.md"
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
@@ -32,7 +33,7 @@ DESK_LABELS = {
 }
 MAX_FIELD_LEN = 360
 TELEGRAM_LIMIT = 4096
-DISCLAIMER = "※ 시장 정보 요약·해석이며 매매 권유가 아닙니다."
+DISCLAIMER = "\u203b \uc2dc\uc7a5 \uc815\ubcf4 \uc694\uc57d\u00b7\ud574\uc11d\uc774\uba70 \ub9e4\ub9e4 \uad8c\uc720\uac00 \uc544\ub2d9\ub2c8\ub2e4."
 
 
 # --------------------------------------------------------------------------- #
@@ -73,7 +74,7 @@ def clean_md(s):
         return ""
     s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)   # [text](url) -> text
     s = re.sub(r"(\*\*|__|\*)", "", s)               # drop emphasis markers
-    s = s.replace(chr(96), "")                       # 모바일 복사 버그 방지를 위해 chr(96)으로 백틱 제거
+    s = s.replace(chr(96), "")                       # mobile copy bug: strip backticks via chr(96)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -121,11 +122,11 @@ def extract_items(board):
 
 
 def extract_watch(board):
-    m = re.search(r"\*\*Watch\*\*\s*[—-]\s*(.+)", board, re.DOTALL)
+    m = re.search(r"\*\*Watch\*\*\s*[\u2014-]\s*(.+)", board, re.DOTALL)
     if not m:
         return ""
     chunk = m.group(1)
-    for stop in ("· keywords:", "keywords:"):
+    for stop in ("\u00b7 keywords:", "keywords:"):
         i = chunk.find(stop)
         if i != -1:
             chunk = chunk[:i]
@@ -154,7 +155,7 @@ def esc(s):
 
 
 def as_of_date(p):
-    """보드의 updated 시각을 기준일(오늘)로 사용. 없으면 실제 UTC 오늘로 폴백."""
+    """Use the board's updated time as 'today'; fall back to real UTC today."""
     updated = (p.get("updated") or "").strip()
     # "2026-07-17T18:15Z" -> "2026-07-17"
     if len(updated) >= 10 and updated[4] == "-" and updated[7] == "-":
@@ -166,35 +167,35 @@ def as_of_date(p):
 # relay mode (English, no LLM)
 # --------------------------------------------------------------------------- #
 def build_message_relay(parts):
-    lines = [f"\U0001F4C8 <b>오늘의 미국 시장 브리핑</b>"
-             + (f" · {esc(parts['updated'])}" if parts["updated"] else "")]
+    lines = [f"\U0001F4C8 <b>\uc624\ub298\uc758 \ubbf8\uad6d \uc2dc\uc7a5 \ube0c\ub9ac\ud551</b>"
+             + (f" \u00b7 {esc(parts['updated'])}" if parts["updated"] else "")]
     if parts["next_update"]:
-        lines.append(f"다음 갱신: {esc(parts['next_update'])}")
+        lines.append(f"\ub2e4\uc74c \uac31\uc2e0: {esc(parts['next_update'])}")
 
     if parts["frame"]:
-        lines += ["", "\U0001F9ED <b>한 줄 요약</b>", esc(parts["frame"])]
+        lines += ["", "\U0001F9ED <b>\ud55c \uc904 \uc694\uc57d</b>", esc(parts["frame"])]
 
     shown = [(DESK_LABELS.get(k, k), parts["desk"][k])
              for k in DESK_FIELDS if k in parts["desk"]]
     if shown:
-        lines += ["", "\U0001F50E <b>좀 더 자세히</b>"]
+        lines += ["", "\U0001F50E <b>\uc880 \ub354 \uc790\uc138\ud788</b>"]
         for label, val in shown:
-            lines.append(f"• <b>{esc(label)}:</b> {esc(truncate(val, MAX_FIELD_LEN))}")
+            lines.append(f"\u2022 <b>{esc(label)}:</b> {esc(truncate(val, MAX_FIELD_LEN))}")
 
     if parts["items"]:
-        lines += ["", "\U0001F4CC <b>오늘의 주요 포인트</b>"]
+        lines += ["", "\U0001F4CC <b>\uc624\ub298\uc758 \uc8fc\uc694 \ud3ec\uc778\ud2b8</b>"]
         for emoji, h in parts["items"]:
             lines.append(f"{emoji} {esc(truncate(h, 200))}")
 
     if parts["watch"]:
-        lines += ["", "\U0001F440 <b>앞으로 지켜볼 것</b>", esc(truncate(parts["watch"], 500))]
+        lines += ["", "\U0001F440 <b>\uc55e\uc73c\ub85c \uc9c0\ucf1c\ubcfc \uac83</b>", esc(truncate(parts["watch"], 500))]
 
-    lines += ["", '\U0001F517 전체 보드: https://agentnews.md/finance']
+    lines += ["", '\U0001F517 \uc804\uccb4 \ubcf4\ub4dc: https://agentnews.md/finance']
     return "\n".join(lines).strip()
 
 
 # --------------------------------------------------------------------------- #
-# synthesize mode (Korean + 반도체/SOXL 관점, via Anthropic API)
+# synthesize mode (Korean + semi/SOXL lens, via Anthropic API)
 # --------------------------------------------------------------------------- #
 SYSTEM_PROMPT = (
     "You turn a compressed macro market board into an EASY Korean briefing for "
@@ -205,10 +206,10 @@ SYSTEM_PROMPT = (
     "based on the FRESH desk frame / items / watch, NOT on STANDING BACKGROUND.\n"
     '  "desk_ko": array of {"label","text"} - rewrite the four desk-frame fields '
     "in plain Korean using THESE friendly labels, in this order:\n"
-    '       Held            -> "지금 핵심 흐름"\n'
-    '       Falsifier       -> "이렇게 되면 흐름이 바뀌어요"\n'
-    '       Contested       -> "아직 의견이 갈려요"\n'
-    '       Changed since last -> "어제와 달라진 점"\n'
+    '       Held            -> "\uc9c0\uae08 \ud575\uc2ec \ud750\ub984"\n'
+    '       Falsifier       -> "\uc774\ub807\uac8c \ub418\uba74 \ud750\ub984\uc774 \ubc14\ub00c\uc5b4\uc694"\n'
+    '       Contested       -> "\uc544\uc9c1 \uc758\uacac\uc774 \uac08\ub824\uc694"\n'
+    '       Changed since last -> "\uc5b4\uc81c\uc640 \ub2ec\ub77c\uc9c4 \uc810"\n'
     '  "items_ko": array of strings - each main point as ONE easy sentence. '
     "PRESERVE the leading emoji.\n"
     '  "watch_ko": string - what to keep an eye on, in plain Korean.\n'
@@ -217,18 +218,18 @@ SYSTEM_PROMPT = (
     "Writing rules (IMPORTANT):\n"
     "- Write for a smart non-expert. Short, clear, friendly sentences.\n"
     "- The FIRST time a technical term appears, add a tiny parenthetical "
-    "explanation, e.g. PCE(미국 물가지표), 2년물 금리(시장이 보는 단기 금리 전망), "
-    "달러인덱스(달러가 얼마나 강한지), 레버리지 ETF(주가 등락을 몇 배로 키운 상품). "
+    "explanation, e.g. PCE(\ubbf8\uad6d \ubb3c\uac00\uc9c0\ud45c), 2\ub144\ubb3c \uae08\ub9ac(\uc2dc\uc7a5\uc774 \ubcf4\ub294 \ub2e8\uae30 \uae08\ub9ac \uc804\ub9dd), "
+    "\ub2ec\ub7ec\uc778\ub371\uc2a4(\ub2ec\ub7ec\uac00 \uc5bc\ub9c8\ub098 \uac15\ud55c\uc9c0), \ub808\ubc84\ub9ac\uc9c0 ETF(\uc8fc\uac00 \ub4f1\ub77d\uc744 \uba87 \ubc30\ub85c \ud0a4\uc6b4 \uc0c1\ud488). "
     "Keep each explanation very short.\n"
     "- Avoid desk jargon (front-end, repricing, bid, tug-of-war, hawkish). Use "
-    "everyday Korean instead (예: 단기 금리, 다시 가격에 반영, 매수세, 줄다리기, "
-    "금리 인상에 무게).\n"
+    "everyday Korean instead (\uc608: \ub2e8\uae30 \uae08\ub9ac, \ub2e4\uc2dc \uac00\uaca9\uc5d0 \ubc18\uc601, \ub9e4\uc218\uc138, \uc904\ub2e4\ub9ac\uae30, "
+    "\uae08\ub9ac \uc778\uc0c1\uc5d0 \ubb34\uac8c).\n"
     "- Ground everything ONLY in the provided board. Do NOT invent numbers, "
     "levels, or facts not present.\n"
     "- PRIORITY: the FRESH sections (desk frame / items / watch) outrank "
     "STANDING BACKGROUND. If they conflict, the fresh sections win, and nothing "
     "from STANDING BACKGROUND may be presented as current or upcoming.\n"
-    "- DATE AWARENESS: the user message starts with an AS_OF date — treat it as "
+    "- DATE AWARENESS: the user message starts with an AS_OF date - treat it as "
     "today. If the board frames a scheduled event (CPI, FOMC, PCE, jobs print, "
     "etc.) whose date is BEFORE AS_OF, it has ALREADY been released: do NOT call "
     "it upcoming and do NOT say the market is 'waiting for' it. Describe it as "
@@ -243,14 +244,14 @@ SYSTEM_PROMPT = (
 def parts_to_plaintext(p):
     lines = [f"AS_OF: {as_of_date(p)} (treat this as today's date)", ""]
     if p["frame"]:
-        # 상단 프레임은 매 윈도우 갱신되지 않는 'sticky' 서술이라 낡을 수 있음.
-        # 최신 여부 판단·관전포인트에는 쓰지 말고 장기 맥락 배경으로만.
+        # The top frame is a 'sticky' narrative not refreshed each window -> may be stale.
+        # Use only as long-run context, never for what is current/upcoming.
         lines.append(
-            "STANDING BACKGROUND (lower priority, may be stale — do NOT use for "
+            "STANDING BACKGROUND (lower priority, may be stale - do NOT use for "
             "what is current or upcoming; long-run context only): " + p["frame"]
         )
     if p["desk"]:
-        lines.append("DESK FRAME (FRESH, this window — PRIMARY SOURCE):")
+        lines.append("DESK FRAME (FRESH, this window - PRIMARY SOURCE):")
         for k in DESK_FIELDS:
             if k in p["desk"]:
                 lines.append(f"- {k}: {p['desk'][k]}")
@@ -259,7 +260,7 @@ def parts_to_plaintext(p):
         for emoji, h in p["items"]:
             lines.append(f"{emoji} {h}")
     if p["watch"]:
-        lines.append("WATCH (FRESH — use for what to watch next): " + p["watch"])
+        lines.append("WATCH (FRESH - use for what to watch next): " + p["watch"])
     return "\n".join(lines)
 
 
@@ -291,7 +292,7 @@ def call_anthropic(plain_text):
 def parse_llm_json(txt):
     s = txt.strip()
 
-    # 모바일 복사 버그를 피하기 위해 특수기호를 직접 쓰지 않고 우회해서 마크다운 기호를 제거합니다.
+    # Strip markdown fences without typing the char directly (mobile copy bug).
     tick3 = chr(96) * 3
     if s.startswith(tick3 + "json"):
         s = s[7:]
@@ -308,38 +309,38 @@ def parse_llm_json(txt):
 
 
 def build_message_ko(obj, parts):
-    lines = [f"\U0001F4C8 <b>오늘의 미국 시장 브리핑</b>"
-             + (f" · {esc(parts['updated'])}" if parts["updated"] else "")]
+    lines = [f"\U0001F4C8 <b>\uc624\ub298\uc758 \ubbf8\uad6d \uc2dc\uc7a5 \ube0c\ub9ac\ud551</b>"
+             + (f" \u00b7 {esc(parts['updated'])}" if parts["updated"] else "")]
     if parts["next_update"]:
-        lines.append(f"다음 갱신: {esc(parts['next_update'])}")
+        lines.append(f"\ub2e4\uc74c \uac31\uc2e0: {esc(parts['next_update'])}")
 
     if obj.get("frame_ko"):
-        lines += ["", "\U0001F9ED <b>한 줄 요약</b>", esc(obj["frame_ko"])]
+        lines += ["", "\U0001F9ED <b>\ud55c \uc904 \uc694\uc57d</b>", esc(obj["frame_ko"])]
 
     desk = obj.get("desk_ko") or []
     if desk:
-        lines += ["", "\U0001F50E <b>좀 더 자세히</b>"]
+        lines += ["", "\U0001F50E <b>\uc880 \ub354 \uc790\uc138\ud788</b>"]
         for d in desk:
             label = esc(str(d.get("label", "")))
             text = esc(truncate(str(d.get("text", "")), MAX_FIELD_LEN))
-            lines.append(f"• <b>{label}:</b> {text}")
+            lines.append(f"\u2022 <b>{label}:</b> {text}")
 
     items = obj.get("items_ko") or []
     if items:
-        lines += ["", "\U0001F4CC <b>오늘의 주요 포인트</b>"]
+        lines += ["", "\U0001F4CC <b>\uc624\ub298\uc758 \uc8fc\uc694 \ud3ec\uc778\ud2b8</b>"]
         for it in items:
             lines.append(esc(truncate(str(it), 220)))
 
     if obj.get("semi_soxl_ko"):
-        lines += ["", "\U0001F9EE <b>반도체 · SOXL 관점</b>",
+        lines += ["", "\U0001F9EE <b>\ubc18\ub3c4\uccb4 \u00b7 SOXL \uad00\uc810</b>",
                   esc(truncate(str(obj["semi_soxl_ko"]), 900))]
 
     if obj.get("watch_ko"):
-        lines += ["", "\U0001F440 <b>앞으로 지켜볼 것</b>",
+        lines += ["", "\U0001F440 <b>\uc55e\uc73c\ub85c \uc9c0\ucf1c\ubcfc \uac83</b>",
                   esc(truncate(str(obj["watch_ko"]), 500))]
 
     lines += ["", f"<i>{esc(DISCLAIMER)}</i>",
-              '\U0001F517 전체 보드: https://agentnews.md/finance']
+              '\U0001F517 \uc804\uccb4 \ubcf4\ub4dc: https://agentnews.md/finance']
     return "\n".join(lines).strip()
 
 
@@ -396,40 +397,48 @@ def build_digest(mode):
 
 
 # --------------------------------------------------------------------------- #
-# routes
+# web server mode (legacy) - Flask imported lazily so the Actions run,
+# which never serves HTTP, does not require Flask to be installed.
 # --------------------------------------------------------------------------- #
-@app.route("/health")
-def health():
-    return jsonify({"ok": True})
+def run_web_server():
+    from flask import Flask, request, jsonify
 
+    app = Flask(__name__)
 
-@app.route("/digest", methods=["GET", "POST"])
-def digest():
-    key = request.args.get("key") or request.headers.get("X-Run-Key")
-    expected = cfg("RUN_KEY")
-    if expected and key != expected:
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    @app.route("/health")
+    def health():
+        return jsonify({"ok": True})
 
-    mode = (request.args.get("mode") or cfg("DIGEST_MODE", "synthesize")).lower()
-    if mode not in ("relay", "synthesize"):
-        mode = "synthesize"
+    @app.route("/digest", methods=["GET", "POST"])
+    def digest():
+        key = request.args.get("key") or request.headers.get("X-Run-Key")
+        expected = cfg("RUN_KEY")
+        if expected and key != expected:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
 
-    try:
-        msg, info = build_digest(mode)
-    except Exception as e:
-        error_msg = str(e)[:200] + "..." if len(str(e)) > 200 else str(e)
-        return jsonify({"ok": False, "stage": "build", "error": error_msg}), 500
+        mode = (request.args.get("mode") or cfg("DIGEST_MODE", "synthesize")).lower()
+        if mode not in ("relay", "synthesize"):
+            mode = "synthesize"
 
-    if request.args.get("dry") in ("1", "true", "yes"):
-        return jsonify({"ok": True, "dry_run": True, "info": info, "message": msg})
+        try:
+            msg, info = build_digest(mode)
+        except Exception as e:
+            error_msg = str(e)[:200] + "..." if len(str(e)) > 200 else str(e)
+            return jsonify({"ok": False, "stage": "build", "error": error_msg}), 500
 
-    try:
-        send_telegram(msg)
-    except Exception as e:
-        error_msg = str(e)[:200] + "..." if len(str(e)) > 200 else str(e)
-        return jsonify({"ok": False, "stage": "send", "error": error_msg}), 500
+        if request.args.get("dry") in ("1", "true", "yes"):
+            return jsonify({"ok": True, "dry_run": True, "info": info, "message": msg})
 
-    return jsonify({"ok": True, "sent": True, "info": info})
+        try:
+            send_telegram(msg)
+        except Exception as e:
+            error_msg = str(e)[:200] + "..." if len(str(e)) > 200 else str(e)
+            return jsonify({"ok": False, "stage": "send", "error": error_msg}), 500
+
+        return jsonify({"ok": True, "sent": True, "info": info})
+
+    port = int(os.environ.get("PORT", "8080"))
+    app.run(host="0.0.0.0", port=port)
 
 
 # --------------------------------------------------------------------------- #
@@ -437,25 +446,24 @@ def digest():
 # --------------------------------------------------------------------------- #
 if __name__ == "__main__":
     if os.environ.get("GITHUB_ACTIONS") == "true":
-        print("GitHub Actions 모드로 자동 실행을 시작합니다...")
+        print("GitHub Actions \ubaa8\ub4dc\ub85c \uc790\ub3d9 \uc2e4\ud589\uc744 \uc2dc\uc791\ud569\ub2c8\ub2e4...")
         try:
             mode = os.environ.get("DIGEST_MODE", "synthesize").lower()
             if mode not in ("relay", "synthesize"):
                 mode = "synthesize"
 
-            print(f"데이터 수집 및 분석 중... (모드: {mode})")
+            print(f"\ub370\uc774\ud130 \uc218\uc9d1 \ubc0f \ubd84\uc11d \uc911... (\ubaa8\ub4dc: {mode})")
             msg, info = build_digest(mode)
 
-            print("텔레그램으로 메시지 발송 중...")
+            print("\ud154\ub808\uadf8\ub7a8\uc73c\ub85c \uba54\uc2dc\uc9c0 \ubc1c\uc1a1 \uc911...")
             send_telegram(msg)
 
-            print(f"작업 완료! 텔레그램을 확인해 주세요. (결과 상태: {info.get('mode')})")
+            print(f"\uc791\uc5c5 \uc644\ub8cc! \ud154\ub808\uadf8\ub7a8\uc744 \ud655\uc778\ud574 \uc8fc\uc138\uc694. (\uacb0\uacfc \uc0c1\ud0dc: {info.get('mode')})")
 
         except Exception as e:
-            print(f"실행 중 에러 발생: {e}")
+            print(f"\uc2e4\ud589 \uc911 \uc5d0\ub7ec \ubc1c\uc0dd: {e}")
             raise e
 
     else:
-        print("웹 서버 모드로 실행합니다...")
-        port = int(os.environ.get("PORT", "8080"))
-        app.run(host="0.0.0.0", port=port)
+        print("\uc6f9 \uc11c\ubc84 \ubaa8\ub4dc\ub85c \uc2e4\ud589\ud569\ub2c8\ub2e4...")
+        run_web_server()
