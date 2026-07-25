@@ -2,7 +2,7 @@ name: Daily macro digest
 
 on:
   schedule:
-    # 22:30 UTC = 07:30 KST (한국은 UTC+9, 서머타임 없음)
+    # 00:45 UTC = 09:45 KST (한국은 UTC+9, 서머타임 없음)
     - cron: "30 22 * * 1-5"
   workflow_dispatch: {}
 
